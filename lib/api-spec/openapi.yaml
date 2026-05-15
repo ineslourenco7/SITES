@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: AI Builder API — proxies requests to local Ollama instance
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: ai
+    description: AI/Ollama operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /ai/models:
+    get:
+      operationId: listModels
+      tags: [ai]
+      summary: List available Ollama models
+      description: Returns all locally available Ollama models
+      responses:
+        "200":
+          description: List of models
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        "503":
+          description: Ollama not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /ai/chat:
+    post:
+      operationId: chatWithAi
+      tags: [ai]
+      summary: Send a chat message to AI
+      description: Proxies a chat message to the local Ollama instance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatInput"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "503":
+          description: Ollama not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /ai/generate:
+    post:
+      operationId: generateProject
+      tags: [ai]
+      summary: Generate a full project from a prompt
+      description: Uses AI to generate project files from a natural language prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateInput"
+      responses:
+        "200":
+          description: Generated project files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateResponse"
+        "503":
+          description: Ollama not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /ai/fix:
+    post:
+      operationId: fixErrors
+      tags: [ai]
+      summary: Fix errors in code
+      description: Uses AI to fix errors in provided code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FixInput"
+      responses:
+        "200":
+          description: Fixed code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixResponse"
+        "503":
+          description: Ollama not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /ai/improve:
+    post:
+      operationId: improveDesign
+      tags: [ai]
+      summary: Improve the design of code
+      description: Uses AI to improve UI/design of provided code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImproveInput"
+      responses:
+        "200":
+          description: Improved code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImproveResponse"
+        "503":
+          description: Ollama not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /ai/status:
+    get:
+      operationId: getOllamaStatus
+      tags: [ai]
+      summary: Check Ollama connection status
+      description: Returns whether Ollama is reachable and the configured endpoint
+      responses:
+        "200":
+          description: Ollama status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OllamaStatus"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +175,191 @@ components:
       required:
         - status
 
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    OllamaModel:
+      type: object
+      properties:
+        name:
+          type: string
+        modified_at:
+          type: string
+        size:
+          type: integer
+      required:
+        - name
+        - modified_at
+        - size
+
+    ModelList:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/OllamaModel"
+        ollamaEndpoint:
+          type: string
+      required:
+        - models
+        - ollamaEndpoint
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+      required:
+        - role
+        - content
+
+    ChatInput:
+      type: object
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        ollamaEndpoint:
+          type: ["string", "null"]
+      required:
+        - model
+        - messages
+
+    ChatResponse:
+      type: object
+      properties:
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        done:
+          type: boolean
+      required:
+        - message
+        - done
+
+    ProjectFile:
+      type: object
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        language:
+          type: string
+      required:
+        - path
+        - content
+        - language
+
+    GenerateInput:
+      type: object
+      properties:
+        prompt:
+          type: string
+        model:
+          type: string
+        template:
+          type: ["string", "null"]
+        ollamaEndpoint:
+          type: ["string", "null"]
+      required:
+        - prompt
+        - model
+
+    GenerateResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectFile"
+        projectName:
+          type: string
+        description:
+          type: string
+      required:
+        - files
+        - projectName
+        - description
+
+    FixInput:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectFile"
+        errors:
+          type: string
+        model:
+          type: string
+        ollamaEndpoint:
+          type: ["string", "null"]
+      required:
+        - files
+        - errors
+        - model
+
+    FixResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectFile"
+        explanation:
+          type: string
+      required:
+        - files
+        - explanation
+
+    ImproveInput:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectFile"
+        model:
+          type: string
+        ollamaEndpoint:
+          type: ["string", "null"]
+      required:
+        - files
+        - model
+
+    ImproveResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectFile"
+        explanation:
+          type: string
+      required:
+        - files
+        - explanation
+
+    OllamaStatus:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        endpoint:
+          type: string
+        error:
+          type: ["string", "null"]
+      required:
+        - connected
+        - endpoint

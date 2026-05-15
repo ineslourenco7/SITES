@@ -1,0 +1,102 @@
+Cria uma plataforma web estilo Replit + Rocket AI, sem créditos, sem login e sem pagamentos.
+
+Objetivo:
+Uma aplicação onde qualquer pessoa entra, escreve no chat o site/app que quer criar, e a IA gera automaticamente o projeto com código, ficheiros, preview e botão para exportar.
+
+Stack obrigatória:
+- Next.js
+- TypeScript
+- Tailwind CSS
+- Monaco Editor
+- Sandpack ou WebContainers para preview
+- Shadcn/UI
+- Supabase apenas se for necessário para guardar projetos localmente, sem login
+- LocalStorage/IndexedDB para guardar projetos no browser
+
+Modelo de IA:
+- Não usar sistema de créditos
+- Não exigir login
+- Permitir usar modelos gratuitos/open-source via Ollama local
+- Permitir configurar endpoint local tipo:
+  http://localhost:11434
+- Modelos sugeridos:
+  - llama3
+  - deepseek-coder
+  - qwen-coder
+  - codellama
+- A app deve funcionar como interface para IA local, não como SaaS pago
+
+Funcionalidades:
+1. Página inicial moderna estilo Replit/Rocket AI.
+2. Botão “Start Building”.
+3. Campo de prompt: “What do you want to build?”
+4. Chat com IA.
+5. Geração automática de projeto.
+6. Estrutura de ficheiros lateral.
+7. Editor de código no centro.
+8. Preview em tempo real à direita.
+9. Botão “Run”.
+10. Botão “Fix Errors”.
+11. Botão “Improve Design”.
+12. Botão “Export ZIP”.
+13. Guardar projetos no browser sem conta.
+14. Histórico local dos prompts.
+15. Templates rápidos:
+   - Landing page
+   - SaaS dashboard
+   - Booking app
+   - E-commerce
+   - Trading dashboard
+   - Portfolio
+   - Blog
+16. Modo “Agent” onde a IA altera vários ficheiros sozinha.
+17. Modo “Manual” onde o utilizador edita código.
+18. Sem sistema de créditos, sem pagamentos e sem login.
+
+Linguagem/UX igual a Replit e Rocket AI:
+Usa textos em inglês, curtos e modernos:
+- “Build apps by chatting with AI”
+- “Describe what you want to create”
+- “Generate full-stack apps instantly”
+- “Run, preview and export your project”
+- “No login. No credits. Local AI.”
+- “Ask AI to build, fix or improve your app”
+- “Your browser. Your code. Your AI.”
+
+Design:
+- Dark mode premium
+- Tons preto, cinza, azul e roxo
+- Visual jovem, tecnológico e limpo
+- Sidebar esquerda com projetos e ficheiros
+- Editor central
+- Preview à direita
+- Chat inferior/lateral
+- Botões arredondados
+- Animações suaves
+- Estilo parecido com Replit, Bolt, Cursor e Rocket AI
+
+Requisitos técnicos:
+- Código limpo e modular
+- Criar componentes reutilizáveis
+- Separar:
+  - Chat AI
+  - File Explorer
+  - Code Editor
+  - Preview
+  - Project Manager
+  - Settings
+  - Export ZIP
+- API route para comunicar com Ollama local
+- Não guardar API keys
+- Não depender de autenticação
+- Tudo deve correr localmente
+
+Entrega:
+Cria o MVP completo e funcional.
+Inclui:
+- estrutura de pastas
+- todos os ficheiros principais
+- instruções para instalar
+- como correr com npm
+- como ligar ao Ollama local
+- como exportar ZIP
