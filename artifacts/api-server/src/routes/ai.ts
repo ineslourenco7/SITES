@@ -341,4 +341,86 @@ Only include files that were changed. Return complete file contents.`;
   }
 });
 
+router.post("/ai/stream", async (req, res) => {
+  const { model, messages, type = "chat", ollamaEndpoint: clientEndpoint } = req.body as {
+    model?: string;
+    messages?: { role: string; content: string }[];
+    type?: "chat" | "generate" | "fix" | "improve";
+    ollamaEndpoint?: string | null;
+  };
+
+  if (!model || !messages?.length) {
+    res.status(400).json({ error: "model and messages are required" });
+    return;
+  }
+
+  const endpoint = getOllamaEndpoint(clientEndpoint);
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const sendEvent = (data: object) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const sendDone = () => {
+    res.write("data: [DONE]\n\n");
+    res.end();
+  };
+
+  try {
+    const response = await fetch(`${endpoint}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages, stream: true }),
+      signal: AbortSignal.timeout(240000),
+    });
+
+    if (!response.ok || !response.body) {
+      const text = await response.text();
+      sendEvent({ error: `Ollama error: ${text}` });
+      sendDone();
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const chunk = JSON.parse(trimmed) as {
+            message?: { content?: string };
+            done?: boolean;
+          };
+          const token = chunk.message?.content ?? "";
+          sendEvent({ token, done: chunk.done ?? false });
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+
+    sendDone();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    req.log.error({ err }, "Streaming error");
+    sendEvent({ error: `Streaming failed: ${message}` });
+    sendDone();
+  }
+});
+
 export default router;

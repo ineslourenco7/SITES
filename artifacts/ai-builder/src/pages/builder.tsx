@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useSearch } from "wouter";
 import {
-  Play, Download, Wand2, Wrench, Terminal, Send, Settings, ChevronRight,
-  FilePlus, FolderOpen, Trash2, CheckCircle2, AlertCircle, Loader2, Zap,
-  FileCode, FileText, Globe, RefreshCw
+  Play, Download, Wand2, Wrench, Terminal, Send, Settings,
+  FolderOpen, CheckCircle2, AlertCircle, Loader2, Zap,
+  FileCode, FileText, Globe, RefreshCw, Square,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { SandpackProvider, SandpackPreview } from "@codesandbox/sandpack-react";
@@ -11,7 +11,6 @@ import JSZip from "jszip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Select,
@@ -26,8 +25,6 @@ import {
   useListModels,
   useGetOllamaStatus,
   getGetOllamaStatusQueryKey,
-  useChatWithAi,
-  useGenerateProject,
   useFixErrors,
   useImproveDesign,
   type ProjectFile,
@@ -43,6 +40,26 @@ const TEMPLATE_PROMPTS: Record<string, string> = {
   "Portfolio": "Build a personal developer portfolio with hero, about, skills, projects, and contact sections.",
   "Blog": "Create a clean blog homepage with featured article, article list, sidebar, and tags filter.",
 };
+
+const GENERATE_SYSTEM_PROMPT = `You are an expert full-stack developer. Generate complete, working web project files based on the user's description.
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format:
+{
+  "projectName": "my-project",
+  "description": "Brief description of the project",
+  "files": [
+    { "path": "index.html", "content": "<!DOCTYPE html>...", "language": "html" },
+    { "path": "styles.css", "content": "...", "language": "css" },
+    { "path": "script.js", "content": "...", "language": "javascript" }
+  ]
+}
+
+Rules:
+- Generate real, working, complete code — not placeholders
+- Use vanilla HTML/CSS/JS unless the user asks for a framework
+- Include at least index.html, styles.css, and script.js
+- Make the UI look modern and professional
+- Do not include any explanation text outside the JSON`;
 
 const DEFAULT_FILES: ProjectFile[] = [
   {
@@ -77,8 +94,7 @@ p { color: #a1a1aa; font-size: 1.1rem; }`,
   {
     path: "script.js",
     language: "javascript",
-    content: `// Your app logic goes here
-console.log("App started!");`,
+    content: `// Your app logic goes here\nconsole.log("App started!");`,
   },
 ];
 
@@ -101,11 +117,21 @@ function getLanguageFromPath(path: string): string {
 }
 
 function sandpackFilesFromProject(files: ProjectFile[]) {
-  const result: Record<string, { code: string; active?: boolean }> = {};
+  const result: Record<string, { code: string }> = {};
   for (const f of files) {
     result[`/${f.path}`] = { code: f.content };
   }
   return result;
+}
+
+function tryParseProjectJson(raw: string): { projectName?: string; description?: string; files?: ProjectFile[] } | null {
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
 }
 
 export default function BuilderPage() {
@@ -126,6 +152,12 @@ export default function BuilderPage() {
   const [selectedModel, setSelectedModel] = useState(settings.model || "");
   const [previewKey, setPreviewKey] = useState(0);
   const [agentMode, setAgentMode] = useState<"agent" | "manual">("agent");
+
+  // Streaming state
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const { data: models } = useListModels();
@@ -133,16 +165,10 @@ export default function BuilderPage() {
     query: { queryKey: getGetOllamaStatusQueryKey(), refetchInterval: 10000 },
   });
 
-  const chatMutation = useChatWithAi();
-  const generateMutation = useGenerateProject();
   const fixMutation = useFixErrors();
   const improveMutation = useImproveDesign();
 
-  const isLoading =
-    chatMutation.isPending ||
-    generateMutation.isPending ||
-    fixMutation.isPending ||
-    improveMutation.isPending;
+  const isLoading = isStreaming || fixMutation.isPending || improveMutation.isPending;
 
   useEffect(() => {
     if (templateParam && TEMPLATE_PROMPTS[templateParam]) {
@@ -152,7 +178,7 @@ export default function BuilderPage() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
+  }, [chatMessages, streamingContent]);
 
   useEffect(() => {
     if (models?.models?.length && !selectedModel) {
@@ -164,7 +190,7 @@ export default function BuilderPage() {
   const activeFileLang = getLanguageFromPath(activeFile);
 
   const handleEditorChange = (value: string | undefined) => {
-    if (!value) return;
+    if (value === undefined) return;
     setCurrentFiles((prev) =>
       prev.map((f) => (f.path === activeFile ? { ...f, content: value } : f))
     );
@@ -182,46 +208,114 @@ export default function BuilderPage() {
 
   const applyFiles = useCallback(
     (newFiles: ProjectFile[], projectName?: string, description?: string) => {
-      const merged = [...currentFiles];
-      for (const nf of newFiles) {
-        const idx = merged.findIndex((f) => f.path === nf.path);
-        const withLang = {
-          ...nf,
-          language: nf.language || getLanguageFromPath(nf.path),
-        };
-        if (idx >= 0) {
-          merged[idx] = withLang;
-        } else {
-          merged.push(withLang);
+      setCurrentFiles((prev) => {
+        const merged = [...prev];
+        for (const nf of newFiles) {
+          const idx = merged.findIndex((f) => f.path === nf.path);
+          const withLang = { ...nf, language: nf.language || getLanguageFromPath(nf.path) };
+          if (idx >= 0) merged[idx] = withLang;
+          else merged.push(withLang);
         }
-      }
-      setCurrentFiles(merged);
+        if (merged.length > 0) setActiveFile(merged[0].path);
+        return merged;
+      });
       setPreviewKey((k) => k + 1);
 
-      if (merged.length > 0) {
-        setActiveFile(merged[0].path);
-      }
-
       if (projectName) {
-        if (currentProjectId) {
-          updateProject(currentProjectId, {
-            name: projectName,
-            description: description ?? "",
-            files: merged,
-          });
-        } else {
-          const p = addProject({
-            name: projectName,
-            description: description ?? "",
-            files: merged,
-          });
-          setCurrentProjectId(p.id);
-        }
+        setCurrentFiles((merged) => {
+          if (currentProjectId) {
+            updateProject(currentProjectId, { name: projectName, description: description ?? "", files: merged });
+          } else {
+            const p = addProject({ name: projectName, description: description ?? "", files: merged });
+            setCurrentProjectId(p.id);
+          }
+          return merged;
+        });
       } else if (currentProjectId) {
-        updateProject(currentProjectId, { files: merged });
+        setCurrentFiles((merged) => {
+          updateProject(currentProjectId, { files: merged });
+          return merged;
+        });
       }
     },
-    [currentFiles, currentProjectId, addProject, updateProject]
+    [currentProjectId, addProject, updateProject]
+  );
+
+  const stopStreaming = () => {
+    abortRef.current?.abort();
+  };
+
+  const streamFromAI = useCallback(
+    async (messages: { role: string; content: string }[], onComplete: (fullText: string) => void) => {
+      setIsStreaming(true);
+      setStreamingContent("");
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let fullText = "";
+
+      try {
+        const response = await fetch("/api/ai/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: selectedModel, messages }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          const text = await response.text();
+          throw new Error(`Server error: ${text}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data:")) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") break;
+
+            try {
+              const event = JSON.parse(payload) as { token?: string; done?: boolean; error?: string };
+              if (event.error) throw new Error(event.error);
+              if (event.token) {
+                fullText += event.token;
+                setStreamingContent(fullText);
+              }
+            } catch (parseErr) {
+              if ((parseErr as Error).message?.startsWith("Server error") || (parseErr as Error).message?.startsWith("Streaming")) {
+                throw parseErr;
+              }
+            }
+          }
+        }
+
+        onComplete(fullText);
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          onComplete(fullText || "(stopped)");
+        } else {
+          const msg = err instanceof Error ? err.message : "Streaming failed";
+          pushMessage({ role: "assistant", content: `Error: ${msg}` });
+        }
+      } finally {
+        setIsStreaming(false);
+        setStreamingContent("");
+        abortRef.current = null;
+      }
+    },
+    [selectedModel, pushMessage]
   );
 
   const handleSend = async () => {
@@ -241,102 +335,92 @@ export default function BuilderPage() {
     pushMessage({ role: "user", content: text });
 
     if (agentMode === "agent") {
-      generateMutation.mutate(
-        {
-          data: {
-            prompt: text,
-            model: selectedModel,
-            template: templateParam ?? undefined,
-          },
-        },
-        {
-          onSuccess: (result) => {
-            if (result.files?.length) {
-              applyFiles(result.files, result.projectName, result.description);
-              pushMessage({
-                role: "assistant",
-                content: `Generated project "${result.projectName}" with ${result.files.length} files. ${result.description}`,
-              });
-            } else {
-              pushMessage({
-                role: "assistant",
-                content: "The AI returned an empty project. Try rephrasing your prompt.",
-              });
-            }
-          },
-          onError: (err) => {
-            pushMessage({
-              role: "assistant",
-              content: `Error: ${err instanceof Error ? err.message : "Something went wrong"}`,
-            });
-          },
+      const messages = [
+        { role: "system", content: GENERATE_SYSTEM_PROMPT },
+        { role: "user", content: `Build this: ${text}` },
+      ];
+
+      await streamFromAI(messages, (fullText) => {
+        const parsed = tryParseProjectJson(fullText);
+        if (parsed?.files?.length) {
+          applyFiles(parsed.files, parsed.projectName, parsed.description);
+          pushMessage({
+            role: "assistant",
+            content: `Generated "${parsed.projectName ?? "project"}" with ${parsed.files.length} file${parsed.files.length > 1 ? "s" : ""}. ${parsed.description ?? ""}`,
+          });
+        } else {
+          pushMessage({
+            role: "assistant",
+            content: fullText || "The AI returned an empty response. Try rephrasing your prompt.",
+          });
         }
-      );
+      });
     } else {
-      chatMutation.mutate(
-        {
-          data: {
-            model: selectedModel,
-            messages: [...chatMessages, { role: "user", content: text }],
-          },
-        },
-        {
-          onSuccess: (result) => {
-            pushMessage(result.message);
-          },
-          onError: (err) => {
-            pushMessage({
-              role: "assistant",
-              content: `Error: ${err instanceof Error ? err.message : "Something went wrong"}`,
-            });
-          },
-        }
-      );
+      const messages = [
+        ...chatMessages.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: text },
+      ];
+
+      await streamFromAI(messages, (fullText) => {
+        pushMessage({ role: "assistant", content: fullText });
+      });
     }
   };
 
   const handleFixErrors = () => {
     if (!selectedModel) return;
-    fixMutation.mutate(
+    const filesSnapshot = currentFiles;
+    const messages = [
       {
-        data: {
-          files: currentFiles,
-          errors: "Fix any syntax errors, bugs, and improve code quality.",
-          model: selectedModel,
-        },
+        role: "system",
+        content: `You are an expert developer fixing code errors. Given the project files, fix any issues and return corrected files as JSON:
+{"explanation":"...","files":[{"path":"file.js","content":"...","language":"javascript"}]}
+Only include changed files. Return complete file contents.`,
       },
       {
-        onSuccess: (result) => {
-          if (result.files?.length) {
-            applyFiles(result.files);
-            toast({ title: "Errors fixed", description: result.explanation });
-          }
-        },
-        onError: () => {
-          toast({ title: "Fix failed", description: "Could not reach Ollama.", variant: "destructive" });
-        },
+        role: "user",
+        content: `Fix errors in:\n\n${filesSnapshot.map((f) => `${f.path}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join("\n\n")}`,
+      },
+    ];
+
+    streamFromAI(messages, (fullText) => {
+      const parsed = tryParseProjectJson(fullText) as { explanation?: string; files?: ProjectFile[] } | null;
+      if (parsed?.files?.length) {
+        applyFiles(parsed.files);
+        toast({ title: "Errors fixed", description: parsed.explanation ?? "Code improved" });
+      } else {
+        toast({ title: "Fix complete", description: "Review the AI response in chat." });
+        pushMessage({ role: "assistant", content: fullText });
       }
-    );
+    });
   };
 
   const handleImproveDesign = () => {
     if (!selectedModel) return;
-    improveMutation.mutate(
+    const filesSnapshot = currentFiles;
+    const messages = [
       {
-        data: { files: currentFiles, model: selectedModel },
+        role: "system",
+        content: `You are an expert UI designer. Improve the visual design of the provided code and return improved files as JSON:
+{"explanation":"...","files":[{"path":"styles.css","content":"...","language":"css"}]}
+Only include changed files. Return complete file contents.`,
       },
       {
-        onSuccess: (result) => {
-          if (result.files?.length) {
-            applyFiles(result.files);
-            toast({ title: "Design improved", description: result.explanation });
-          }
-        },
-        onError: () => {
-          toast({ title: "Improve failed", description: "Could not reach Ollama.", variant: "destructive" });
-        },
+        role: "user",
+        content: `Improve the design of:\n\n${filesSnapshot.map((f) => `${f.path}:\n\`\`\`${f.language}\n${f.content}\n\`\`\``).join("\n\n")}`,
+      },
+    ];
+
+    streamFromAI(messages, (fullText) => {
+      const parsed = tryParseProjectJson(fullText) as { explanation?: string; files?: ProjectFile[] } | null;
+      if (parsed?.files?.length) {
+        applyFiles(parsed.files);
+        toast({ title: "Design improved", description: parsed.explanation ?? "UI enhanced" });
+      } else {
+        toast({ title: "Improve complete", description: "Review the AI response in chat." });
+        pushMessage({ role: "assistant", content: fullText });
       }
-    );
+    });
   };
 
   const handleExportZip = async () => {
@@ -417,7 +501,7 @@ export default function BuilderPage() {
                 </SelectItem>
               ))
             ) : (
-              <SelectItem value="none" disabled>No models found</SelectItem>
+              <SelectItem value="__none__" disabled>No models found</SelectItem>
             )}
           </SelectContent>
         </Select>
@@ -515,9 +599,8 @@ export default function BuilderPage() {
 
       {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar — file explorer + projects */}
+        {/* Left sidebar */}
         <aside className="w-56 flex-none border-r border-border bg-sidebar flex flex-col">
-          {/* Projects section */}
           {projects.length > 0 && (
             <div className="border-b border-sidebar-border">
               <div className="px-3 py-2 text-xs font-semibold text-sidebar-foreground/50 uppercase tracking-wider flex items-center gap-1.5">
@@ -545,7 +628,6 @@ export default function BuilderPage() {
             </div>
           )}
 
-          {/* Files section */}
           <div className="px-3 py-2 text-xs font-semibold text-sidebar-foreground/50 uppercase tracking-wider flex items-center gap-1.5">
             <FileCode className="w-3.5 h-3.5" />
             Files
@@ -617,30 +699,46 @@ export default function BuilderPage() {
           </div>
 
           {/* Chat panel */}
-          <div className="h-56 flex-none border-t border-border bg-card flex flex-col">
+          <div className="h-60 flex-none border-t border-border bg-card flex flex-col">
             <div className="px-3 py-1.5 border-b border-border flex items-center gap-2">
               <Terminal className="w-3.5 h-3.5 text-primary" />
               <span className="text-xs font-semibold text-muted-foreground">
-                AI Chat — {agentMode === "agent" ? "Agent mode (generates files)" : "Manual mode (chat only)"}
+                AI Chat — {agentMode === "agent" ? "Agent mode" : "Manual mode"}
               </span>
-              {isLoading && (
+              {isStreaming && (
                 <div className="flex items-center gap-1.5 ml-auto">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                  <span className="text-xs text-muted-foreground">Thinking...</span>
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
+                  </span>
+                  <span className="text-xs text-primary font-mono">streaming</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5 ml-1 text-muted-foreground hover:text-destructive"
+                    onClick={stopStreaming}
+                    data-testid="button-stop-stream"
+                  >
+                    <Square className="w-3 h-3 fill-current" />
+                  </Button>
                 </div>
               )}
             </div>
             <ScrollArea className="flex-1 px-3 py-2">
               <div className="space-y-3">
                 {chatMessages.map((msg, i) => (
-                  <div key={i} className={`flex gap-2 ${msg.role === "user" ? "justify-end" : ""}`} data-testid={`chat-message-${i}`}>
+                  <div
+                    key={i}
+                    className={`flex gap-2 ${msg.role === "user" ? "justify-end" : ""}`}
+                    data-testid={`chat-message-${i}`}
+                  >
                     {msg.role === "assistant" && (
                       <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center text-primary flex-none mt-0.5">
                         <Zap className="w-3 h-3" />
                       </div>
                     )}
                     <div
-                      className={`max-w-[85%] px-3 py-2 rounded-lg text-xs leading-relaxed ${
+                      className={`max-w-[85%] px-3 py-2 rounded-lg text-xs leading-relaxed whitespace-pre-wrap ${
                         msg.role === "user"
                           ? "bg-primary text-primary-foreground rounded-br-none"
                           : "bg-muted text-foreground rounded-tl-none"
@@ -650,6 +748,28 @@ export default function BuilderPage() {
                     </div>
                   </div>
                 ))}
+
+                {/* Streaming bubble */}
+                {isStreaming && (
+                  <div className="flex gap-2" data-testid="chat-streaming-bubble">
+                    <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center text-primary flex-none mt-0.5">
+                      <Zap className="w-3 h-3" />
+                    </div>
+                    <div className="max-w-[85%] px-3 py-2 rounded-lg rounded-tl-none text-xs leading-relaxed whitespace-pre-wrap bg-muted text-foreground">
+                      {streamingContent || (
+                        <span className="flex gap-1 items-center text-muted-foreground">
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:0ms]" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:150ms]" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:300ms]" />
+                        </span>
+                      )}
+                      {streamingContent && (
+                        <span className="inline-block w-0.5 h-3.5 bg-primary ml-0.5 animate-pulse align-middle" />
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div ref={chatEndRef} />
               </div>
             </ScrollArea>
@@ -658,7 +778,7 @@ export default function BuilderPage() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !isLoading) {
                     e.preventDefault();
                     handleSend();
                   }
@@ -675,7 +795,7 @@ export default function BuilderPage() {
                 disabled={isLoading || !chatInput.trim()}
                 data-testid="button-send-chat"
               >
-                {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                {isStreaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
               </Button>
             </div>
           </div>
