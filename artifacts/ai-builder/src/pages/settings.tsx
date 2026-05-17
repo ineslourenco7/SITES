@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { Settings, Save, CheckCircle2, AlertCircle, Loader2, Infinity } from "lucide-react";
+import { Settings, Save, CheckCircle2, AlertCircle, Loader2, Infinity, RefreshCw } from "lucide-react";
 import { useLocalStore } from "@/hooks/use-local-store";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -16,61 +16,62 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 
+async function fetchOllamaTags(endpoint: string): Promise<{ models: { name: string }[]; error: string | null }> {
+  try {
+    const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return { models: [], error: `HTTP ${res.status}` };
+    const data = await res.json() as { models?: { name: string }[] };
+    return { models: data.models ?? [], error: null };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { models: [], error: msg };
+  }
+}
+
 export default function SettingsPage() {
   const { settings, saveSettings } = useLocalStore();
   const [endpoint, setEndpoint] = useState(settings.endpoint || "http://localhost:11434");
   const [selectedModel, setSelectedModel] = useState(settings.model || "");
+  const [manualModel, setManualModel] = useState(settings.model || "");
+  const [useManual, setUseManual] = useState(false);
   const { toast } = useToast();
 
-  // Sync when context finishes loading from localStorage
   useEffect(() => {
     setEndpoint(settings.endpoint || "http://localhost:11434");
     setSelectedModel(settings.model || "");
+    setManualModel(settings.model || "");
   }, [settings.endpoint, settings.model]);
 
-  const { data: status, refetch: refetchStatus, isFetching: isCheckingStatus } = useQuery({
-    queryKey: ["ollama-status-settings", endpoint],
-    queryFn: async () => {
-      try {
-        const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
-        if (res.ok) return { connected: true, error: null };
-        return { connected: false, error: `HTTP ${res.status}` };
-      } catch (err) {
-        return { connected: false, error: err instanceof Error ? err.message : "Cannot reach Ollama" };
-      }
-    },
+  const { data: result, refetch, isFetching } = useQuery({
+    queryKey: ["ollama-tags", endpoint],
+    queryFn: () => fetchOllamaTags(endpoint),
     retry: false,
   });
 
-  const { data: modelsData, isFetching: isLoadingModels, refetch: refetchModels } = useQuery({
-    queryKey: ["ollama-models-settings", endpoint],
-    queryFn: async () => {
-      const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return { models: [] as { name: string }[] };
-      const data = await res.json() as { models?: { name: string }[] };
-      return { models: data.models ?? [] };
-    },
-    retry: false,
-    enabled: !!status?.connected,
-  });
+  const connected = result ? result.error === null : null;
+  const models = result?.models ?? [];
+  const fetchError = result?.error ?? null;
 
-  const models = modelsData?.models ?? [];
+  const isCorsError = fetchError !== null && (
+    fetchError.toLowerCase().includes("cors") ||
+    fetchError.toLowerCase().includes("failed to fetch") ||
+    fetchError.toLowerCase().includes("networkerror") ||
+    fetchError.toLowerCase().includes("load failed")
+  );
 
-  // Auto-select first model if none selected and models are available
   useEffect(() => {
     if (models.length > 0 && !selectedModel) {
       setSelectedModel(models[0].name);
+      setManualModel(models[0].name);
     }
-  }, [models, selectedModel]);
+    if (fetchError) setUseManual(true);
+  }, [models, selectedModel, fetchError]);
+
+  const effectiveModel = useManual ? manualModel : selectedModel;
 
   const handleSave = () => {
-    saveSettings({ endpoint, model: selectedModel });
-    refetchStatus();
-    refetchModels();
-    toast({
-      title: "Settings saved",
-      description: "Your Ollama configuration has been saved.",
-    });
+    saveSettings({ endpoint, model: effectiveModel });
+    toast({ title: "Settings saved", description: "Your Ollama configuration has been saved." });
   };
 
   return (
@@ -93,65 +94,92 @@ export default function SettingsPage() {
           </div>
           <div>
             <h1 className="text-3xl font-bold">Settings</h1>
-            <p className="text-muted-foreground">Configure your local Ollama instance. No API keys, no credits, no limits.</p>
+            <p className="text-muted-foreground">No API keys, no credits, no limits.</p>
           </div>
         </div>
 
         <Card className="bg-card">
           <CardHeader>
             <CardTitle>Ollama Configuration</CardTitle>
-            <CardDescription>
-              All AI runs on your machine — completely free and private.
-            </CardDescription>
+            <CardDescription>All AI runs on your machine — completely free and private.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+
             {/* Endpoint */}
             <div className="space-y-2">
               <Label htmlFor="endpoint">Ollama Endpoint URL</Label>
-              <Input
-                id="endpoint"
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-                placeholder="http://localhost:11434"
-                className="font-mono text-sm"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="endpoint"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                  placeholder="http://localhost:11434"
+                  className="font-mono text-sm"
+                />
+                <Button variant="outline" size="icon" onClick={() => refetch()} disabled={isFetching} title="Test connection">
+                  {isFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                </Button>
+              </div>
             </div>
 
             {/* Connection status */}
-            <div className="rounded-lg border border-border p-4 bg-muted/30">
-              <h3 className="font-semibold mb-2">Connection Status</h3>
+            <div className="rounded-lg border border-border p-4 bg-muted/30 space-y-3">
+              <h3 className="font-semibold">Connection Status</h3>
               <div className="flex items-center gap-3">
-                {isCheckingStatus ? (
+                {isFetching ? (
                   <><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /><span className="text-sm text-muted-foreground">Checking…</span></>
-                ) : status?.connected ? (
-                  <><CheckCircle2 className="w-5 h-5 text-green-500" /><span className="text-sm text-green-500 font-medium">Connected to Ollama</span></>
+                ) : connected === null ? (
+                  <span className="text-sm text-muted-foreground">Not tested yet</span>
+                ) : connected ? (
+                  <><CheckCircle2 className="w-5 h-5 text-green-500" /><span className="text-sm text-green-500 font-medium">Connected — {models.length} model{models.length !== 1 ? "s" : ""} found</span></>
                 ) : (
-                  <><AlertCircle className="w-5 h-5 text-destructive" /><span className="text-sm text-destructive font-medium">{status?.error || "Could not connect to Ollama"}</span></>
+                  <><AlertCircle className="w-5 h-5 text-destructive" /><span className="text-sm text-destructive font-medium">{fetchError}</span></>
                 )}
               </div>
-              {!status?.connected && !isCheckingStatus && (
-                <div className="mt-3 space-y-1.5 text-xs text-muted-foreground">
-                  <p className="font-medium text-foreground/70">To connect:</p>
-                  <p>1. Install Ollama from <span className="font-mono text-primary">ollama.com</span></p>
-                  <p>2. Run with CORS enabled:</p>
-                  <code className="block bg-background rounded px-2 py-1 font-mono border border-border">
+
+              {/* CORS help */}
+              {isCorsError && (
+                <div className="space-y-2 text-xs border border-yellow-500/30 bg-yellow-500/5 rounded-lg p-3">
+                  <p className="font-semibold text-yellow-500">CORS is blocking the connection.</p>
+                  <p className="text-muted-foreground">Restart Ollama with CORS enabled:</p>
+                  <code className="block bg-background rounded px-2 py-1.5 font-mono border border-border select-all">
                     OLLAMA_ORIGINS="*" ollama serve
                   </code>
-                  <p>3. Pull a model: <span className="font-mono">ollama pull llama3</span></p>
+                  <p className="text-muted-foreground">On Windows (PowerShell):</p>
+                  <code className="block bg-background rounded px-2 py-1.5 font-mono border border-border select-all">
+                    $env:OLLAMA_ORIGINS="*"; ollama serve
+                  </code>
+                </div>
+              )}
+
+              {/* Not connected general help */}
+              {!connected && !isCorsError && connected !== null && !isFetching && (
+                <div className="space-y-1.5 text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground/70">Make sure Ollama is running:</p>
+                  <code className="block bg-background rounded px-2 py-1.5 font-mono border border-border select-all">
+                    OLLAMA_ORIGINS="*" ollama serve
+                  </code>
+                  <p>Then pull a model: <span className="font-mono">ollama pull llama3</span></p>
                 </div>
               )}
             </div>
 
             {/* Model selection */}
             <div className="space-y-2">
-              <Label htmlFor="model">Default Model</Label>
-              {isLoadingModels ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading models…
-                </div>
-              ) : models.length > 0 ? (
-                <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="model">Model</Label>
+                {models.length > 0 && (
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                    onClick={() => setUseManual(!useManual)}
+                  >
+                    {useManual ? "Pick from list" : "Type manually"}
+                  </button>
+                )}
+              </div>
+
+              {!useManual && models.length > 0 ? (
+                <Select value={selectedModel} onValueChange={(v) => { setSelectedModel(v); setManualModel(v); }}>
                   <SelectTrigger id="model" className="font-mono text-sm">
                     <SelectValue placeholder="Select a model" />
                   </SelectTrigger>
@@ -164,20 +192,23 @@ export default function SettingsPage() {
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="text-sm text-muted-foreground rounded-lg border border-border p-3 bg-muted/20">
-                  {status?.connected
-                    ? "No models installed. Run: ollama pull llama3"
-                    : "Connect to Ollama first to see available models."}
+                <div className="space-y-1.5">
+                  <Input
+                    id="model"
+                    value={manualModel}
+                    onChange={(e) => setManualModel(e.target.value)}
+                    placeholder="e.g. llama3, mistral, codellama"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Type the exact model name as shown in <span className="font-mono">ollama list</span>.
+                    {isCorsError && " Auto-discovery is blocked by CORS — type the name manually."}
+                  </p>
                 </div>
-              )}
-              {selectedModel && (
-                <p className="text-xs text-muted-foreground">
-                  This model will be pre-selected in the builder.
-                </p>
               )}
             </div>
 
-            <Button onClick={handleSave} className="w-full gap-2">
+            <Button onClick={handleSave} className="w-full gap-2" disabled={!effectiveModel}>
               <Save className="w-4 h-4" /> Save Settings
             </Button>
           </CardContent>

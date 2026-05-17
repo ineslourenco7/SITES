@@ -159,32 +159,27 @@ export default function BuilderPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const ollamaEndpoint = settings.endpoint || "http://localhost:11434";
+  const [modelInput, setModelInput] = useState("");
 
-  const { data: ollamaStatus } = useQuery({
-    queryKey: ["ollama-status", ollamaEndpoint],
+  const { data: tagsResult } = useQuery({
+    queryKey: ["ollama-tags-builder", ollamaEndpoint],
     queryFn: async () => {
       try {
         const res = await fetch(`${ollamaEndpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
-        return { connected: res.ok };
+        if (!res.ok) return { connected: false, models: [] as { name: string }[] };
+        const data = await res.json() as { models?: { name: string }[] };
+        return { connected: true, models: data.models ?? [] };
       } catch {
-        return { connected: false };
+        return { connected: false, models: [] as { name: string }[] };
       }
     },
-    refetchInterval: 10000,
+    refetchInterval: 15000,
     retry: false,
   });
 
-  const { data: modelsData } = useQuery({
-    queryKey: ["ollama-models", ollamaEndpoint],
-    queryFn: async () => {
-      const res = await fetch(`${ollamaEndpoint}/api/tags`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return { models: [] };
-      const data = await res.json() as { models?: { name: string }[] };
-      return { models: data.models ?? [] };
-    },
-    retry: false,
-    enabled: !!ollamaEndpoint,
-  });
+  const ollamaStatus = { connected: tagsResult?.connected ?? false };
+  const modelsData = { models: tagsResult?.models ?? [] };
+  const canAutoDiscover = modelsData.models.length > 0;
 
   const isLoading = isStreaming;
 
@@ -198,11 +193,16 @@ export default function BuilderPage() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, streamingContent]);
 
+  // Initialise model from saved settings or first discovered model
   useEffect(() => {
-    if (modelsData?.models?.length && !selectedModel) {
+    if (settings.model && !selectedModel) {
+      setSelectedModel(settings.model);
+      setModelInput(settings.model);
+    } else if (modelsData.models.length > 0 && !selectedModel) {
       setSelectedModel(modelsData.models[0].name);
+      setModelInput(modelsData.models[0].name);
     }
-  }, [modelsData, selectedModel]);
+  }, [settings.model, modelsData.models, selectedModel]);
 
   const activeFileContent = currentFiles.find((f) => f.path === activeFile)?.content ?? "";
   const activeFileLang = getLanguageFromPath(activeFile);
@@ -522,23 +522,29 @@ Only include changed files. Return complete file contents.`,
           )}
         </div>
 
-        {/* Model selector */}
-        <Select value={selectedModel} onValueChange={setSelectedModel}>
-          <SelectTrigger className="h-7 w-36 text-xs bg-muted border-border font-mono" data-testid="select-model">
-            <SelectValue placeholder="Select model" />
-          </SelectTrigger>
-          <SelectContent>
-            {modelsData?.models?.length ? (
-              modelsData.models.map((m) => (
+        {/* Model selector — dropdown if discovered, text input if CORS blocks */}
+        {canAutoDiscover ? (
+          <Select value={selectedModel} onValueChange={(v) => { setSelectedModel(v); setModelInput(v); }}>
+            <SelectTrigger className="h-7 w-36 text-xs bg-muted border-border font-mono" data-testid="select-model">
+              <SelectValue placeholder="Select model" />
+            </SelectTrigger>
+            <SelectContent>
+              {modelsData.models.map((m) => (
                 <SelectItem key={m.name} value={m.name} className="text-xs font-mono">
                   {m.name}
                 </SelectItem>
-              ))
-            ) : (
-              <SelectItem value="__none__" disabled>No models found</SelectItem>
-            )}
-          </SelectContent>
-        </Select>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            value={modelInput}
+            onChange={(e) => { setModelInput(e.target.value); setSelectedModel(e.target.value); }}
+            placeholder="model name…"
+            className="h-7 w-36 text-xs bg-muted border-border font-mono px-2"
+            data-testid="input-model"
+          />
+        )}
 
         {/* Mode toggle */}
         <div className="flex items-center gap-1 bg-muted rounded-md p-0.5 border border-border">
