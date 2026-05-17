@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { LocalStoreContext, useLocalStoreState } from "@/hooks/use-local-store";
 
 import LandingPage from "@/pages/landing";
 import BuilderPage from "@/pages/builder";
@@ -22,20 +23,30 @@ function Router() {
   );
 }
 
+function LocalStoreProvider({ children }: { children: React.ReactNode }) {
+  const store = useLocalStoreState();
+  return (
+    <LocalStoreContext.Provider value={store}>
+      {children}
+    </LocalStoreContext.Provider>
+  );
+}
+
 function App() {
-  // Force dark mode
   useEffect(() => {
     document.documentElement.classList.add("dark");
   }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
+      <LocalStoreProvider>
+        <TooltipProvider>
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+            <Router />
+          </WouterRouter>
+          <Toaster />
+        </TooltipProvider>
+      </LocalStoreProvider>
     </QueryClientProvider>
   );
 }
