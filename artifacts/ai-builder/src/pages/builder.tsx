@@ -3,11 +3,13 @@ import { Link, useSearch } from "wouter";
 import {
   Play, Download, Wand2, Wrench, Terminal, Send, Settings,
   FolderOpen, CheckCircle2, AlertCircle, Loader2, Zap,
-  FileCode, FileText, Globe, RefreshCw, Square,
+  FileCode, FileText, Globe, RefreshCw, Square, GitCompare,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { SandpackProvider, SandpackPreview } from "@codesandbox/sandpack-react";
 import JSZip from "jszip";
+import { DiffPanel, computeDiffs } from "@/components/diff-panel";
+import type { FileDiffInfo } from "@/components/diff-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -158,6 +160,11 @@ export default function BuilderPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
+  // Diff panel state
+  const [showDiff, setShowDiff] = useState(false);
+  const [diffData, setDiffData] = useState<FileDiffInfo[]>([]);
+  const previousFilesRef = useRef<ProjectFile[]>(DEFAULT_FILES);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const { data: models } = useListModels();
@@ -208,6 +215,11 @@ export default function BuilderPage() {
 
   const applyFiles = useCallback(
     (newFiles: ProjectFile[], projectName?: string, description?: string) => {
+      // Snapshot before state for diff computation
+      const snapshot = previousFilesRef.current;
+
+      let mergedResult: ProjectFile[] = [];
+
       setCurrentFiles((prev) => {
         const merged = [...prev];
         for (const nf of newFiles) {
@@ -217,9 +229,24 @@ export default function BuilderPage() {
           else merged.push(withLang);
         }
         if (merged.length > 0) setActiveFile(merged[0].path);
+        mergedResult = merged;
         return merged;
       });
+
       setPreviewKey((k) => k + 1);
+
+      // Compute and show diffs after state update
+      setTimeout(() => {
+        const diffs = computeDiffs(snapshot, mergedResult.length ? mergedResult : newFiles.map((nf) => ({
+          ...nf,
+          language: nf.language || getLanguageFromPath(nf.path),
+        })));
+        if (diffs.length > 0) {
+          setDiffData(diffs);
+          setShowDiff(true);
+        }
+        previousFilesRef.current = mergedResult.length ? mergedResult : newFiles;
+      }, 0);
 
       if (projectName) {
         setCurrentFiles((merged) => {
@@ -801,48 +828,104 @@ Only include changed files. Return complete file contents.`,
           </div>
         </div>
 
-        {/* Right — Sandpack preview */}
+        {/* Right — Preview / Diff panel */}
         <div className="w-[42%] flex-none flex flex-col bg-background min-w-0">
+          {/* Panel header — shared by both views */}
           <div className="h-9 flex-none border-b border-border bg-muted flex items-center px-3 gap-2">
-            <div className="flex gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
-              <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+            {!showDiff && (
+              <>
+                <div className="flex gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+                </div>
+                <div className="flex-1 mx-2">
+                  <div className="h-5 bg-background rounded text-xs font-mono text-muted-foreground flex items-center justify-center border border-border px-2 truncate">
+                    preview
+                  </div>
+                </div>
+              </>
+            )}
+
+            {showDiff && <div className="flex-1" />}
+
+            {/* Toggle buttons */}
+            <div className="flex items-center gap-1 bg-background/60 rounded border border-border p-0.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={!showDiff ? "default" : "ghost"}
+                    size="icon"
+                    className="h-5 w-5"
+                    onClick={() => setShowDiff(false)}
+                    data-testid="button-show-preview"
+                  >
+                    <Play className="w-3 h-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Live preview</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={showDiff ? "default" : "ghost"}
+                    size="icon"
+                    className={`h-5 w-5 relative ${diffData.length > 0 && !showDiff ? "text-primary" : ""}`}
+                    onClick={() => setShowDiff(true)}
+                    disabled={diffData.length === 0}
+                    data-testid="button-show-diff"
+                  >
+                    <GitCompare className="w-3 h-3" />
+                    {diffData.length > 0 && !showDiff && (
+                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-primary" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {diffData.length === 0 ? "No changes yet" : `View diff (${diffData.length} file${diffData.length !== 1 ? "s" : ""} changed)`}
+                </TooltipContent>
+              </Tooltip>
             </div>
-            <div className="flex-1 mx-2">
-              <div className="h-5 bg-background rounded text-xs font-mono text-muted-foreground flex items-center justify-center border border-border px-2 truncate">
-                preview
-              </div>
+
+            {!showDiff && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={() => setPreviewKey((k) => k + 1)}
+                    data-testid="button-refresh-preview"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Refresh preview</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+
+          {/* Diff panel */}
+          {showDiff && diffData.length > 0 ? (
+            <div className="flex-1 overflow-hidden">
+              <DiffPanel diffs={diffData} onClose={() => setShowDiff(false)} />
             </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  onClick={() => setPreviewKey((k) => k + 1)}
-                  data-testid="button-refresh-preview"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Refresh preview</TooltipContent>
-            </Tooltip>
-          </div>
-          <div className="flex-1 overflow-hidden" key={previewKey}>
-            <SandpackProvider
-              files={sandpackFiles}
-              template="vanilla"
-              customSetup={{ entry: mainFile }}
-              theme="dark"
-            >
-              <SandpackPreview
-                showOpenInCodeSandbox={false}
-                showRefreshButton={false}
-                style={{ height: "100%", border: "none" }}
-              />
-            </SandpackProvider>
-          </div>
+          ) : (
+            <div className="flex-1 overflow-hidden" key={previewKey}>
+              <SandpackProvider
+                files={sandpackFiles}
+                template="vanilla"
+                customSetup={{ entry: mainFile }}
+                theme="dark"
+              >
+                <SandpackPreview
+                  showOpenInCodeSandbox={false}
+                  showRefreshButton={false}
+                  style={{ height: "100%", border: "none" }}
+                />
+              </SandpackProvider>
+            </div>
+          )}
         </div>
       </div>
     </div>
