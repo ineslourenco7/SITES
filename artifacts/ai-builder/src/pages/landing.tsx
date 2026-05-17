@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { motion } from "framer-motion";
-import { Terminal, Zap, Code, Package, ArrowRight } from "lucide-react";
+import { Terminal, Zap, Code, Package, ArrowRight, Infinity, Lock, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const TEMPLATES = [
@@ -47,6 +47,18 @@ export default function LandingPage() {
             transition={{ duration: 0.5 }}
             className="z-10 max-w-3xl"
           >
+            <div className="flex items-center justify-center gap-2 mb-6 flex-wrap">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-green-500 bg-green-500/10 border border-green-500/20 px-3 py-1 rounded-full">
+                <Infinity className="w-3.5 h-3.5" /> Unlimited generations
+              </span>
+              <span className="flex items-center gap-1.5 text-xs font-medium text-blue-400 bg-blue-400/10 border border-blue-400/20 px-3 py-1 rounded-full">
+                <Lock className="w-3.5 h-3.5" /> 100% private
+              </span>
+              <span className="flex items-center gap-1.5 text-xs font-medium text-purple-400 bg-purple-400/10 border border-purple-400/20 px-3 py-1 rounded-full">
+                <Cpu className="w-3.5 h-3.5" /> Runs on your machine
+              </span>
+            </div>
+
             <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-6">
               Build apps by <br />
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">
@@ -54,7 +66,7 @@ export default function LandingPage() {
               </span>
             </h1>
             <p className="text-xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed">
-              Your browser. Your code. Your AI. Generate full-stack web projects instantly with your local Ollama models.
+              No API keys. No credits. No limits. Generate full-stack web projects instantly using your local Ollama models — completely free, forever.
             </p>
             
             <div className="flex items-center justify-center gap-4">
@@ -65,7 +77,7 @@ export default function LandingPage() {
               </Link>
               <Link href="/settings">
                 <Button size="lg" variant="outline" className="h-12 px-8 text-base font-medium">
-                  Configure Local AI
+                  Configure Ollama
                 </Button>
               </Link>
             </div>
