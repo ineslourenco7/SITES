@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import { Settings, Save, CheckCircle2, AlertCircle } from "lucide-react";
 import { useLocalStore } from "@/hooks/use-local-store";
-import { useGetOllamaStatus, getGetOllamaStatusQueryKey } from "@workspace/api-client-react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,14 +11,23 @@ import { useToast } from "@/hooks/use-toast";
 
 export default function SettingsPage() {
   const { settings, saveSettings } = useLocalStore();
-  const [endpoint, setEndpoint] = useState(settings.endpoint);
+  const [endpoint, setEndpoint] = useState(settings.endpoint || "http://localhost:11434");
   const { toast } = useToast();
 
-  const { data: status, refetch, isFetching } = useGetOllamaStatus({
-    query: {
-      queryKey: getGetOllamaStatusQueryKey(),
-      retry: false,
-    }
+  const { data: status, refetch, isFetching } = useQuery({
+    queryKey: ["ollama-status-settings", endpoint],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          return { connected: true, error: null };
+        }
+        return { connected: false, error: `HTTP ${res.status}` };
+      } catch (err) {
+        return { connected: false, error: err instanceof Error ? err.message : "Cannot reach Ollama" };
+      }
+    },
+    retry: false,
   });
 
   const handleSave = () => {
@@ -94,9 +103,15 @@ export default function SettingsPage() {
                 )}
               </div>
               {!status?.connected && !isFetching && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  Make sure Ollama is running locally and OLLAMA_ORIGINS="*" is set if accessing from browser.
-                </p>
+                <div className="mt-3 space-y-1.5 text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground/70">To connect:</p>
+                  <p>1. Install Ollama from <span className="font-mono text-primary">ollama.com</span></p>
+                  <p>2. Run with CORS enabled:</p>
+                  <code className="block bg-background rounded px-2 py-1 font-mono text-xs border border-border">
+                    OLLAMA_ORIGINS="*" ollama serve
+                  </code>
+                  <p>3. Pull a model: <span className="font-mono">ollama pull llama3</span></p>
+                </div>
               )}
             </div>
           </CardContent>

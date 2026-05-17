@@ -8,6 +8,7 @@ import {
 import Editor from "@monaco-editor/react";
 import { SandpackProvider, SandpackPreview } from "@codesandbox/sandpack-react";
 import JSZip from "jszip";
+import { useQuery } from "@tanstack/react-query";
 import { DiffPanel, computeDiffs } from "@/components/diff-panel";
 import type { FileDiffInfo } from "@/components/diff-panel";
 import { Button } from "@/components/ui/button";
@@ -23,15 +24,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useLocalStore, type Project } from "@/hooks/use-local-store";
-import {
-  useListModels,
-  useGetOllamaStatus,
-  getGetOllamaStatusQueryKey,
-  useFixErrors,
-  useImproveDesign,
-  type ProjectFile,
-  type ChatMessage,
-} from "@workspace/api-client-react";
+import type { ProjectFile, ChatMessage } from "@workspace/api-client-react";
 
 const TEMPLATE_PROMPTS: Record<string, string> = {
   "Landing Page": "Create a modern, beautiful landing page for a SaaS product with a hero section, features, pricing, and footer.",
@@ -155,27 +148,45 @@ export default function BuilderPage() {
   const [previewKey, setPreviewKey] = useState(0);
   const [agentMode, setAgentMode] = useState<"agent" | "manual">("agent");
 
-  // Streaming state
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
-  // Diff panel state
   const [showDiff, setShowDiff] = useState(false);
   const [diffData, setDiffData] = useState<FileDiffInfo[]>([]);
   const previousFilesRef = useRef<ProjectFile[]>(DEFAULT_FILES);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const { data: models } = useListModels();
-  const { data: ollamaStatus } = useGetOllamaStatus({
-    query: { queryKey: getGetOllamaStatusQueryKey(), refetchInterval: 10000 },
+  const ollamaEndpoint = settings.endpoint || "http://localhost:11434";
+
+  const { data: ollamaStatus } = useQuery({
+    queryKey: ["ollama-status", ollamaEndpoint],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${ollamaEndpoint}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        return { connected: res.ok };
+      } catch {
+        return { connected: false };
+      }
+    },
+    refetchInterval: 10000,
+    retry: false,
   });
 
-  const fixMutation = useFixErrors();
-  const improveMutation = useImproveDesign();
+  const { data: modelsData } = useQuery({
+    queryKey: ["ollama-models", ollamaEndpoint],
+    queryFn: async () => {
+      const res = await fetch(`${ollamaEndpoint}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return { models: [] };
+      const data = await res.json() as { models?: { name: string }[] };
+      return { models: data.models ?? [] };
+    },
+    retry: false,
+    enabled: !!ollamaEndpoint,
+  });
 
-  const isLoading = isStreaming || fixMutation.isPending || improveMutation.isPending;
+  const isLoading = isStreaming;
 
   useEffect(() => {
     if (templateParam && TEMPLATE_PROMPTS[templateParam]) {
@@ -188,10 +199,10 @@ export default function BuilderPage() {
   }, [chatMessages, streamingContent]);
 
   useEffect(() => {
-    if (models?.models?.length && !selectedModel) {
-      setSelectedModel(models.models[0].name);
+    if (modelsData?.models?.length && !selectedModel) {
+      setSelectedModel(modelsData.models[0].name);
     }
-  }, [models, selectedModel]);
+  }, [modelsData, selectedModel]);
 
   const activeFileContent = currentFiles.find((f) => f.path === activeFile)?.content ?? "";
   const activeFileLang = getLanguageFromPath(activeFile);
@@ -215,7 +226,6 @@ export default function BuilderPage() {
 
   const applyFiles = useCallback(
     (newFiles: ProjectFile[], projectName?: string, description?: string) => {
-      // Snapshot before state for diff computation
       const snapshot = previousFilesRef.current;
 
       let mergedResult: ProjectFile[] = [];
@@ -235,7 +245,6 @@ export default function BuilderPage() {
 
       setPreviewKey((k) => k + 1);
 
-      // Compute and show diffs after state update
       setTimeout(() => {
         const diffs = computeDiffs(snapshot, mergedResult.length ? mergedResult : newFiles.map((nf) => ({
           ...nf,
@@ -283,16 +292,16 @@ export default function BuilderPage() {
       let fullText = "";
 
       try {
-        const response = await fetch("/api/ai/stream", {
+        const response = await fetch(`${ollamaEndpoint}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: selectedModel, messages }),
+          body: JSON.stringify({ model: selectedModel, messages, stream: true }),
           signal: controller.signal,
         });
 
         if (!response.ok || !response.body) {
           const text = await response.text();
-          throw new Error(`Server error: ${text}`);
+          throw new Error(`Ollama error: ${text}`);
         }
 
         const reader = response.body.getReader();
@@ -309,21 +318,19 @@ export default function BuilderPage() {
 
           for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith("data:")) continue;
-            const payload = trimmed.slice(5).trim();
-            if (payload === "[DONE]") break;
-
+            if (!trimmed) continue;
             try {
-              const event = JSON.parse(payload) as { token?: string; done?: boolean; error?: string };
-              if (event.error) throw new Error(event.error);
-              if (event.token) {
-                fullText += event.token;
+              const chunk = JSON.parse(trimmed) as {
+                message?: { content?: string };
+                done?: boolean;
+              };
+              const token = chunk.message?.content ?? "";
+              if (token) {
+                fullText += token;
                 setStreamingContent(fullText);
               }
-            } catch (parseErr) {
-              if ((parseErr as Error).message?.startsWith("Server error") || (parseErr as Error).message?.startsWith("Streaming")) {
-                throw parseErr;
-              }
+            } catch {
+              // skip malformed lines
             }
           }
         }
@@ -342,7 +349,7 @@ export default function BuilderPage() {
         abortRef.current = null;
       }
     },
-    [selectedModel, pushMessage]
+    [ollamaEndpoint, selectedModel, pushMessage]
   );
 
   const handleSend = async () => {
@@ -521,8 +528,8 @@ Only include changed files. Return complete file contents.`,
             <SelectValue placeholder="Select model" />
           </SelectTrigger>
           <SelectContent>
-            {models?.models?.length ? (
-              models.models.map((m) => (
+            {modelsData?.models?.length ? (
+              modelsData.models.map((m) => (
                 <SelectItem key={m.name} value={m.name} className="text-xs font-mono">
                   {m.name}
                 </SelectItem>
@@ -567,7 +574,7 @@ Only include changed files. Return complete file contents.`,
               disabled={isLoading}
               data-testid="button-fix-errors"
             >
-              {fixMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wrench className="w-3.5 h-3.5" />}
+              {isStreaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wrench className="w-3.5 h-3.5" />}
               Fix Errors
             </Button>
           </TooltipTrigger>
@@ -584,7 +591,7 @@ Only include changed files. Return complete file contents.`,
               disabled={isLoading}
               data-testid="button-improve-design"
             >
-              {improveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+              {isStreaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
               Improve
             </Button>
           </TooltipTrigger>
